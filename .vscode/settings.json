@@ -1,0 +1,24 @@
+{
+    "git.rebaseWhenSync": true,
+    "github.copilot.enable": {
+        "*": true,
+        "plaintext": false,
+        "markdown": true,
+        "scminput": false
+    },
+    "chat.agent.maxRequests": 250,
+    "chat.viewSessions.orientation": "stacked",
+    "[markdown]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.wordWrap": "off",
+        "editor.formatOnSave": true,
+    },
+    "chat.tools.terminal.autoApprove": {
+        "uv": true,
+        "mkdir": true,
+        "uniq": true,
+        "awk": true,
+        "diff": true,
+        "md-docx": true
+    }
+}
