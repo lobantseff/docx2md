@@ -162,9 +162,12 @@ class _BrailleSpinner:
         self._label = label
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._animate = sys.stdout.isatty()
 
     def start(self) -> None:
         """Start the spinner animation in a background thread."""
+        if not self._animate:
+            return
         self._thread = threading.Thread(target=self._spin, daemon=True)
         self._thread.start()
 
@@ -180,7 +183,14 @@ class _BrailleSpinner:
         self._stop.set()
         if self._thread:
             self._thread.join()
-        print(f"\r  {symbol} {self._label}")
+        print(f"\r  {symbol} {self._label}", flush=True)
+
+    def __enter__(self) -> _BrailleSpinner:
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.stop("✗" if exc_type else "✓")
 
 
 # ---------------------------------------------------------------------------
@@ -1377,14 +1387,11 @@ def convert_directory(
         md_file = (output_dir / relative).with_suffix(".md")
         md_file.parent.mkdir(parents=True, exist_ok=True)
 
-        spinner = _BrailleSpinner(str(relative))
-        spinner.start()
         try:
-            result = convert_docx_to_md(docx_file, md_file)
+            with _BrailleSpinner(str(relative)):
+                result = convert_docx_to_md(docx_file, md_file)
             converted.append(result)
-            spinner.stop("✓")
         except Exception as exc:  # noqa: BLE001
-            spinner.stop("✗")
             print(f"    {exc}", file=sys.stderr)
 
     return converted
@@ -1394,7 +1401,7 @@ def convert_directory(
 # CLI
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """Entry point for the CLI."""
     parser = argparse.ArgumentParser(
         description="Bidirectional converter between .docx and Markdown.",
@@ -1402,7 +1409,9 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command")
 
     # --- doc2md --------------------------------------------------------
-    p_d2m = subparsers.add_parser("doc2md", help="Convert .docx to Markdown")
+    p_d2m = subparsers.add_parser(
+        "doc2md", prog="doc2md", help="Convert .docx to Markdown"
+    )
     p_d2m.add_argument(
         "input", nargs="?", type=Path, default=None,
         help="Input .docx file (single-file mode)",
@@ -1417,7 +1426,9 @@ def main() -> None:
     )
 
     # --- md2doc --------------------------------------------------------
-    p_m2d = subparsers.add_parser("md2doc", help="Convert Markdown to .docx")
+    p_m2d = subparsers.add_parser(
+        "md2doc", prog="md2doc", help="Convert Markdown to .docx"
+    )
     p_m2d.add_argument(
         "input", type=Path,
         help="Input .md file",
@@ -1431,7 +1442,7 @@ def main() -> None:
         help="Reference .docx for styling (fonts, heading styles, margins)",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.command is None:
         parser.print_help()
@@ -1451,7 +1462,8 @@ def main() -> None:
                 print(f"Error: {args.input} does not exist.", file=sys.stderr)
                 sys.exit(1)
             output = args.output or args.input.with_suffix(".md")
-            result = convert_docx_to_md(args.input, output)
+            with _BrailleSpinner(f"{args.input} → {output}"):
+                result = convert_docx_to_md(args.input, output)
             print(f"Converted: {args.input} → {result}")
 
     elif args.command == "md2doc":
@@ -1459,8 +1471,19 @@ def main() -> None:
             print(f"Error: {args.input} does not exist.", file=sys.stderr)
             sys.exit(1)
         output = args.output or args.input.with_suffix(".docx")
-        result = convert_md_to_docx(args.input, output, args.style_reference)
+        with _BrailleSpinner(f"{args.input} → {output}"):
+            result = convert_md_to_docx(args.input, output, args.style_reference)
         print(f"Converted: {args.input} → {result}")
+
+
+def doc2md() -> None:
+    """Console-script entry point pinned to the ``doc2md`` subcommand."""
+    main(["doc2md", *sys.argv[1:]])
+
+
+def md2doc() -> None:
+    """Console-script entry point pinned to the ``md2doc`` subcommand."""
+    main(["md2doc", *sys.argv[1:]])
 
 
 if __name__ == "__main__":

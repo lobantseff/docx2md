@@ -3,7 +3,7 @@ requires = ["uv-build>=0.7,<0.8"]
 build-backend = "uv_build"
 
 [project]
-name = "md-docx"
+name = "doc2md"
 version = "0.1.0"
 description = "Bidirectional converter between .docx and Markdown"
 requires-python = ">=3.12"
@@ -15,7 +15,11 @@ dependencies = [
 ]
 
 [project.scripts]
-md-docx = "md_docx.main:main"
+doc2md = "md_docx.main:doc2md"
+md2doc = "md_docx.main:md2doc"
 
 [dependency-groups]
 dev = ["pytest"]
+
+[tool.uv.build-backend]
+module-name = "md_docx"

@@ -7,7 +7,6 @@
         "scminput": false
     },
     "chat.agent.maxRequests": 250,
-    "chat.viewSessions.orientation": "stacked",
     "[markdown]": {
         "editor.defaultFormatter": "esbenp.prettier-vscode",
         "editor.wordWrap": "off",
