@@ -41,10 +41,12 @@ import sys
 import tempfile
 import threading
 import time
-from pathlib import Path
+import zipfile
+from pathlib import Path, PurePosixPath
 
 import pypandoc
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from lxml import etree
@@ -321,6 +323,178 @@ def _convert_emf_to_png(src: Path, dest: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Image cropping (docx a:srcRect → physically cropped media)
+# ---------------------------------------------------------------------------
+
+_A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+_CROPPABLE_PART_RE = re.compile(r"word/(document|header\d*|footer\d*)\.xml")
+
+Crop = tuple[float, float, float, float]
+
+
+def _part_rels(zf: zipfile.ZipFile, part: str) -> dict[str, str]:
+    """Return the ``rId`` → target map for an OPC *part*."""
+    p = PurePosixPath(part)
+    try:
+        data = zf.read(str(p.parent / "_rels" / (p.name + ".rels")))
+    except KeyError:
+        return {}
+    root = etree.fromstring(data)
+    return {
+        rel.get("Id"): rel.get("Target")
+        for rel in root.findall(f"{{{_PKG_REL_NS}}}Relationship")
+        if rel.get("Id") and rel.get("Target")
+    }
+
+
+def _blip_rel_ids(blip: etree._Element) -> list[str]:
+    """Relationship ids referenced by an ``a:blip`` — raster plus any SVG variant."""
+    ids = [blip.get(f"{{{_R_NS}}}embed")]
+    for el in blip.iter():
+        if isinstance(el.tag, str) and etree.QName(el).localname == "svgBlip":
+            ids.append(el.get(f"{{{_R_NS}}}embed"))
+    return [i for i in ids if i]
+
+
+def _extract_image_crops(docx_path: Path) -> dict[str, Crop]:
+    """
+    Map media file name → ``(left, top, right, bottom)`` crop fractions.
+
+    Word crops pictures non-destructively via ``a:srcRect`` while the stored
+    media file stays uncropped.  Pandoc extracts the uncropped file but keeps
+    the *cropped* display size, which distorts the aspect ratio.
+
+    Only images whose every usage shares a single crop are returned; the same
+    media file used with different crops cannot be fixed in place.
+    """
+    found: dict[str, set[Crop]] = {}
+
+    with zipfile.ZipFile(docx_path) as zf:
+        for part in zf.namelist():
+            if not _CROPPABLE_PART_RE.fullmatch(part):
+                continue
+            rels = _part_rels(zf, part)
+            root = etree.fromstring(zf.read(part))
+            for fill in root.iter():
+                if not isinstance(fill.tag, str):
+                    continue
+                if etree.QName(fill).localname != "blipFill":
+                    continue
+                src_rect = fill.find(f"{{{_A_NS}}}srcRect")
+                blip = fill.find(f"{{{_A_NS}}}blip")
+                if src_rect is None or blip is None:
+                    continue
+                crop = tuple(
+                    float(src_rect.get(k, 0)) / 100_000.0 for k in ("l", "t", "r", "b")
+                )
+                for rid in _blip_rel_ids(blip):
+                    target = rels.get(rid)
+                    if target:
+                        found.setdefault(PurePosixPath(target).name, set()).add(crop)
+
+    result: dict[str, Crop] = {}
+    for name, crops in found.items():
+        if len(crops) != 1:
+            continue
+        crop = next(iter(crops))
+        if any(crop):
+            result[name] = crop
+    return result
+
+
+def _svg_length(value: str | None) -> float | None:
+    """Parse the numeric part of an SVG length such as ``"616px"``."""
+    if not value:
+        return None
+    m = re.match(r"\s*(-?\d+(?:\.\d+)?)", value)
+    return float(m.group(1)) if m else None
+
+
+def _crop_svg(path: Path, crop: Crop) -> None:
+    """Crop an SVG by narrowing its viewBox (outer ``svg`` clips by default)."""
+    left, top, right, bottom = crop
+    tree = etree.parse(str(path))
+    root = tree.getroot()
+
+    view_box = root.get("viewBox")
+    if view_box:
+        nums = [float(v) for v in re.split(r"[,\s]+", view_box.strip()) if v]
+        if len(nums) != 4:
+            return
+        x, y, w, h = nums
+    else:
+        w = _svg_length(root.get("width"))
+        h = _svg_length(root.get("height"))
+        if not w or not h:
+            return
+        x = y = 0.0
+
+    new_w, new_h = w * (1 - left - right), h * (1 - top - bottom)
+    if new_w <= 0 or new_h <= 0:
+        return
+
+    root.set("viewBox", f"{x + w * left:g} {y + h * top:g} {new_w:g} {new_h:g}")
+    root.set("width", f"{new_w:g}")
+    root.set("height", f"{new_h:g}")
+    tree.write(str(path), xml_declaration=True, encoding="utf-8")
+
+
+def _crop_raster(path: Path, crop: Crop) -> None:
+    """Crop a raster image in place, preserving its original format."""
+    left, top, right, bottom = crop
+    with Image.open(str(path)) as img:
+        img.load()
+        fmt = img.format
+        w, h = img.size
+        box = (
+            round(w * left),
+            round(h * top),
+            round(w * (1 - right)),
+            round(h * (1 - bottom)),
+        )
+        new_w, new_h = box[2] - box[0], box[3] - box[1]
+        if new_w < 1 or new_h < 1 or new_w > 4 * w or new_h > 4 * h:
+            return
+
+        if box[0] < 0 or box[1] < 0 or box[2] > w or box[3] > h:
+            # Negative srcRect values pad the picture instead of cropping it.
+            mode = "RGB" if fmt in {"JPEG", "BMP"} else "RGBA"
+            fill = (255, 255, 255) if mode == "RGB" else (0, 0, 0, 0)
+            cropped = Image.new(mode, (new_w, new_h), fill)
+            cropped.paste(img.convert(mode), (-box[0], -box[1]))
+        else:
+            cropped = img.crop(box)
+    cropped.save(str(path), format=fmt)
+
+
+def _apply_image_crops(image_dir: Path, crops: dict[str, Crop]) -> None:
+    """Physically crop extracted media so it matches the docx display size."""
+    if not crops or not image_dir.is_dir():
+        return
+
+    # Match on stem: EMF/WMF sources have already been rewritten to .png.
+    by_stem = {PurePosixPath(name).stem: crop for name, crop in crops.items()}
+
+    for path in sorted(image_dir.rglob("*")):
+        crop = by_stem.get(path.stem) if path.is_file() else None
+        if crop is None:
+            continue
+        suffix = path.suffix.lower()
+        if suffix in {".emf", ".wmf"}:
+            continue
+        try:
+            if suffix == ".svg":
+                _crop_svg(path, crop)
+            else:
+                _crop_raster(path, crop)
+        except Exception as exc:  # noqa: BLE001
+            print(f"    could not crop {path.name}: {exc}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Text helpers
 # ---------------------------------------------------------------------------
 
@@ -335,6 +509,25 @@ def _straighten_quotes(text: str) -> str:
     )
 
 
+# Titles Word templates leave behind, which carry no information about the
+# actual document and should fall through to the next candidate.
+_PLACEHOLDER_TITLE_RE = re.compile(
+    r"^(?:"
+    r"untitled|titl?e|titre|document\s*(?:title|name)|doc\s*title|"
+    r"insert\s+(?:document\s+)?title(?:\s+here)?|"
+    r"[<\[{(].*[>\]})]|"          # <Title>, [Document title], {Title}
+    r".*\btemplates?\b.*"
+    r")$",
+    re.IGNORECASE,
+)
+
+# Front-section headings that precede the real content of a report.
+_GENERIC_HEADING_RE = re.compile(
+    r"^(?:table\s+of\s+contents|contents|toc|index|revision\s+history)$",
+    re.IGNORECASE,
+)
+
+
 def _extract_title_from_md(content: str) -> str | None:
     """Extract the document title from the first ``#`` heading or ``%`` title block."""
     for line in content.splitlines():
@@ -342,7 +535,8 @@ def _extract_title_from_md(content: str) -> str | None:
         if stripped.startswith("% "):
             return stripped[2:].strip()
         if stripped.startswith("# "):
-            return stripped[2:].strip()
+            heading = stripped[2:].strip()
+            return None if _GENERIC_HEADING_RE.match(heading) else heading
         if stripped and not stripped.startswith("%"):
             break
     return None
@@ -353,11 +547,55 @@ def _extract_title_from_docx(docx_path: Path) -> str | None:
     try:
         doc = Document(str(docx_path))
         title = doc.core_properties.title
-        if title and title.strip():
-            return title.strip()
     except Exception:  # noqa: BLE001
-        pass
-    return None
+        return None
+
+    title = (title or "").strip()
+    if not title or _PLACEHOLDER_TITLE_RE.match(title):
+        return None
+    return title
+
+
+# Dangling punctuation Word title pages tend to leave on the title line.
+_TITLE_TRAILING_RE = re.compile(r"[\s\u2013\u2014:;,-]+$")
+
+
+def _format_title_page(md_content: str) -> tuple[str, str | None]:
+    """
+    Promote a leading title page to an ``#`` heading and return its text.
+
+    Word title pages are plain centred paragraphs, so Pandoc emits them as
+    loose body text with no structure.  A title page is recognised as the
+    content before the first page break, with no heading in between.
+    """
+    lines = md_content.split("\n")
+
+    page_break = next(
+        (i for i, ln in enumerate(lines) if "page-break" in ln), None,
+    )
+    heading = next(
+        (i for i, ln in enumerate(lines) if ln.startswith("#")), None,
+    )
+    if page_break is None or (heading is not None and heading < page_break):
+        return md_content, None
+
+    head = lines[:page_break]
+    title_line = next(
+        (
+            i for i, ln in enumerate(head)
+            if ln.strip() and not ln.lstrip().startswith("<")
+        ),
+        None,
+    )
+    if title_line is None:
+        return md_content, None
+
+    title = _TITLE_TRAILING_RE.sub("", head[title_line].strip())
+    if not title:
+        return md_content, None
+
+    head[title_line] = f"# {title}"
+    return "\n".join(head + lines[page_break:]), title
 
 
 def _extract_title_from_frontmatter(md_path: Path) -> str:
@@ -642,6 +880,29 @@ def _merge_row_to_pattern(
             tar_ci += 1
 
 
+def _flatten_revised_fields(body: etree._Element) -> bool:
+    """
+    Hoist runs out of ``w:ins`` wrappers that contain Word field characters.
+
+    A ``fldChar`` nested inside a tracked insertion breaks Pandoc's field
+    parser: the field never closes, and every following paragraph is swallowed
+    into it — turning later lists into empty bullets and merging their text
+    into the next heading.  Unwrapping accepts the insertion, which is what
+    Pandoc's default ``--track-changes=accept`` does anyway.
+    """
+    changed = False
+    for ins in list(body.iter(f"{{{_W_NS}}}ins")):
+        if ins.find(f".//{{{_W_NS}}}fldChar") is None:
+            continue
+        parent = ins.getparent()
+        index = list(parent).index(ins)
+        for child in reversed(list(ins)):
+            parent.insert(index, child)
+        parent.remove(ins)
+        changed = True
+    return changed
+
+
 def _preprocess_docx(docx_path: Path) -> Path:
     """
     Create a temp copy of *docx_path* with pre-processing applied:
@@ -649,6 +910,7 @@ def _preprocess_docx(docx_path: Path) -> Path:
     1. Replace explicit page breaks with marker paragraphs (Pandoc 3.x
        silently discards ``<w:br w:type="page"/>``).
     2. Normalize tables so Pandoc can emit pipe tables instead of HTML.
+    3. Unwrap tracked insertions around Word field characters.
 
     Returns the original path if no changes were needed.
     """
@@ -678,6 +940,9 @@ def _preprocess_docx(docx_path: Path) -> Path:
 
     # --- Table normalization ---
     if _normalize_tables_for_pandoc(doc):
+        changed = True
+
+    if _flatten_revised_fields(body):
         changed = True
 
     if not changed:
@@ -1045,6 +1310,93 @@ def _md_images_to_html(md_content: str) -> str:
     return _IMG_WITH_DIMS_RE.sub(_replace, md_content)
 
 
+_IMG_TAG_RE = re.compile(r"<img\s[^>]*>")
+
+
+def _center_image_lines(md_content: str) -> str:
+    """
+    Wrap image-only lines in ``<p align="center">``.
+
+    The deprecated ``align`` attribute is used rather than inline CSS because
+    GitHub's HTML sanitizer strips ``style`` but keeps ``align``.
+    """
+    lines = md_content.split("\n")
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("<img"):
+            continue
+        if _IMG_TAG_RE.sub("", stripped).strip():
+            continue
+        lines[i] = f'<p align="center">{stripped}</p>'
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Table of contents
+# ---------------------------------------------------------------------------
+
+# Word TOC field converted by Pandoc: [Title [page](#anchor)](#anchor)
+_TOC_ENTRY_RE = re.compile(
+    r'^\[(?P<text>.+?)\s*\[\d+\]\([^)]*\)\]\((?P<anchor>[^)]*)\)$'
+)
+
+_SECTION_NUM_RE = re.compile(r'^(\d+(?:\.\d+)*)\s')
+
+
+def _toc_entry(match: re.Match) -> str | None:
+    """Render one matched TOC entry as an indented list item."""
+    text = match.group("text").strip()
+    anchor = match.group("anchor").strip()
+
+    num = _SECTION_NUM_RE.match(text)
+    indent = "  " * (num.group(1).count(".") if num else 0)
+
+    # `#_TocNNNNN` is an unresolved Word bookmark — it links nowhere.
+    if not anchor.startswith("#") or anchor.startswith("#_Toc"):
+        # Unnumbered and unlinkable means it is the TOC's own self-reference.
+        return f"{indent}- {text}" if num else None
+    return f"{indent}- [{text}]({anchor})"
+
+
+def _fix_toc(md_content: str) -> str:
+    """
+    Rewrite Pandoc's table of contents into a nested bullet list.
+
+    Word TOC fields become ``[Title [page](#anchor)](#anchor)`` — a link nested
+    inside a link, which no Markdown renderer supports, so entries show up as
+    literal text rather than navigation.  Page numbers are dropped and the
+    heading numbering is used to indent entries by level.
+    """
+    lines = md_content.split("\n")
+    result: list[str] = []
+    i = 0
+
+    while i < len(lines):
+        if not _TOC_ENTRY_RE.match(lines[i].strip()):
+            result.append(lines[i])
+            i += 1
+            continue
+
+        blanks = 0
+        while i < len(lines):
+            stripped = lines[i].strip()
+            if not stripped:
+                blanks += 1
+                i += 1
+                continue
+            match = _TOC_ENTRY_RE.match(stripped)
+            if match is None:
+                break
+            entry = _toc_entry(match)
+            if entry is not None:
+                result.append(entry)
+            blanks = 0
+            i += 1
+        i -= blanks
+
+    return "\n".join(result)
+
+
 # ---------------------------------------------------------------------------
 # EMF post-processing
 # ---------------------------------------------------------------------------
@@ -1098,6 +1450,10 @@ def convert_docx_to_md(
     # Extract table column widths from original docx for later post-processing.
     table_col_widths = _extract_table_col_widths(docx_path)
 
+    # Word crops pictures non-destructively; record crops so the extracted
+    # media can be cropped for real (otherwise it renders squeezed).
+    image_crops = _extract_image_crops(docx_path)
+
     # Pre-process: inject page-break markers, normalize tables
     preprocessed = _preprocess_docx(docx_path)
     is_temp = preprocessed != docx_path
@@ -1132,14 +1488,17 @@ def convert_docx_to_md(
             shutil.rmtree(image_dir)
         media_dir.rename(image_dir)
 
-        # Fix image references: absolute paths and relative paths,
-        # in both markdown ![](…) and HTML <img src="…"> syntax.
-        abs_media = str(md_path.parent / "media")
-        md_content = md_content.replace(abs_media + "/", image_dir_name + "/")
-        md_content = md_content.replace(abs_media, image_dir_name)
-        md_content = re.sub(
-            r'(\]\(|src=["\'])media/',
-            rf'\g<1>{image_dir_name}/',
+        # Rewrite image references only inside link targets and src attributes.
+        # A blanket text replace would also hit prose such as "median".
+        prefixes = {str(md_path.parent / "media"), "media"}
+        media_ref_re = re.compile(
+            r'(?P<lead>\]\(|src=["\'])(?P<dots>\./)?'
+            r"(?:" + "|".join(
+                re.escape(p) for p in sorted(prefixes, key=len, reverse=True)
+            ) + r")/",
+        )
+        md_content = media_ref_re.sub(
+            lambda m: f"{m['lead']}{m['dots'] or ''}{image_dir_name}/",
             md_content,
         )
     elif media_dir.exists():
@@ -1153,8 +1512,12 @@ def convert_docx_to_md(
         _PAGE_BREAK_MARKER, '<div class="page-break"></div>',
     )
 
+    md_content, page_title = _format_title_page(md_content)
+
     # Adjust pipe-table separator dashes to preserve original column proportions
     md_content = _adjust_table_separators(md_content, table_col_widths)
+
+    md_content = _fix_toc(md_content)
 
     # Clean up image groups (strip blockquotes, round dimensions, spacing)
     md_content = _post_process_images(md_content)
@@ -1162,14 +1525,23 @@ def convert_docx_to_md(
     # Convert Pandoc image attributes to HTML <img> tags for clean rendering
     md_content = _md_images_to_html(md_content)
 
-    # Extract title: prefer docx metadata, then first heading, then filename
-    title = docx_title or _extract_title_from_md(md_content) or md_path.stem
+    md_content = _center_image_lines(md_content)
+
+    # Extract title: prefer the title page, then docx metadata, then filename
+    title = (
+        page_title
+        or docx_title
+        or _extract_title_from_md(md_content)
+        or md_path.stem
+    )
     final_content = _YAML_FRONTMATTER.format(title=title) + md_content
 
     md_path.write_text(final_content, encoding="utf-8")
 
     # Post-process EMF/WMF images
     _post_process_emf_images(image_dir, md_path)
+
+    _apply_image_crops(image_dir, image_crops)
 
     # Clean up empty image dir
     if image_dir.exists() and not any(image_dir.iterdir()):
@@ -1197,6 +1569,19 @@ def _keep_tables_together(docx_path: Path) -> None:
                     keep_lines.set(qn("w:val"), "true")
                     ppr.append(keep_lines)
     doc.save(str(docx_path))
+
+
+def _center_image_paragraphs(docx_path: Path) -> None:
+    """Center paragraphs whose only content is one or more images."""
+    doc = Document(str(docx_path))
+    changed = False
+    for para in doc.paragraphs:
+        if para.text.strip() or not para._p.findall(f".//{qn('w:drawing')}"):
+            continue
+        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        changed = True
+    if changed:
+        doc.save(str(docx_path))
 
 
 def _apply_table_col_widths(docx_path: Path, col_widths: list[list[float]]) -> None:
@@ -1343,6 +1728,8 @@ def convert_md_to_docx(
         tmp_md.unlink(missing_ok=True)
 
     _keep_tables_together(docx_path)
+
+    _center_image_paragraphs(docx_path)
 
     # Set title in docx core properties (metadata only, not rendered visibly).
     if title:
