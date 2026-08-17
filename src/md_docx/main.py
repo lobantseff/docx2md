@@ -1848,7 +1848,14 @@ def main(argv: list[str] | None = None) -> None:
             if not args.input.exists():
                 print(f"Error: {args.input} does not exist.", file=sys.stderr)
                 sys.exit(1)
-            output = args.output or args.input.with_suffix(".md")
+            if args.output is None:
+                output = args.input.with_suffix(".md")
+            elif args.output.is_dir() or args.output.suffix == "":
+                # No suffix (or an existing directory) means -o names a
+                # directory to place the converted file into, not a file.
+                output = args.output / args.input.with_suffix(".md").name
+            else:
+                output = args.output
             with _BrailleSpinner(f"{args.input} → {output}"):
                 result = convert_docx_to_md(args.input, output)
             print(f"Converted: {args.input} → {result}")
