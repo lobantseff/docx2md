@@ -5,6 +5,9 @@
 # ///
 """Bump the ``version`` field in pyproject.toml.
 
+The bump is committed on its own and tagged ``vX.Y.Z`` with an annotated tag,
+so the tag always points at a commit that contains only the version change.
+
 Usage::
 
     ./increment_version.py patch          # 0.1.0 -> 0.1.1
@@ -19,6 +22,7 @@ import argparse
 import re
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -52,6 +56,28 @@ def bump(text: str, part: str) -> tuple[str, str, str]:
     return new_text, old, new
 
 
+def _git(*args: str, capture: bool = False) -> str:
+    """Run a git command in ROOT, aborting on failure."""
+    result = subprocess.run(
+        ["git", *args], cwd=ROOT, capture_output=capture, text=True
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise SystemExit(f"git {' '.join(args)} failed: {stderr}")
+    return (result.stdout or "").strip()
+
+
+def commit_and_tag(version: str) -> None:
+    """Commit only pyproject.toml and put an annotated ``vX.Y.Z`` tag on it."""
+    author = _git("config", "user.name", capture=True) or "unknown"
+    stamp = datetime.now().strftime("%y%m%d %H:%M")
+
+    _git("add", str(PYPROJECT))
+    _git("commit", "-m", f"Bump version to {version}")
+    _git("tag", "-a", f"v{version}", "-m", f"v{version} released at {stamp} by {author}")
+    print(f"Committed and tagged v{version}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -68,7 +94,7 @@ def main() -> None:
     )
     parser.add_argument(
         "-n", "--dry-run", action="store_true",
-        help="Print the new version without writing pyproject.toml",
+        help="Print the new version without writing, committing or tagging",
     )
     args = parser.parse_args()
 
@@ -81,6 +107,8 @@ def main() -> None:
 
     PYPROJECT.write_text(new_text, encoding="utf-8")
     print(f"{old} -> {new}")
+
+    commit_and_tag(new)
 
     if args.install:
         result = subprocess.run(
