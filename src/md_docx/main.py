@@ -42,6 +42,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path, PurePosixPath
 
 import pypandoc
@@ -58,6 +59,11 @@ from PIL import Image
 # ---------------------------------------------------------------------------
 
 _BRAILLE_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+try:
+    __version__ = _pkg_version("doc2md")
+except PackageNotFoundError:  # running from a source tree without an install
+    __version__ = "unknown"
 
 # Sentinel injected into docx before Pandoc conversion so page breaks survive.
 _PAGE_BREAK_MARKER = "PAGE_BREAK_7f8a9b3c"
@@ -142,6 +148,42 @@ function RawInline(el)
 
         return pandoc.Image(caption, src, "", pandoc.Attr("", {}, attr_pairs))
     end
+end
+
+-- <sub>/<sup> HTML markers survive as RawInline pairs (Pandoc's docx writer
+-- silently drops raw HTML formatting), so collapse each pair into a real
+-- Subscript/Superscript element that carries proper vertAlign in the docx.
+function Inlines(inlines)
+    local result = pandoc.List()
+    local i = 1
+    while i <= #inlines do
+        local el = inlines[i]
+        local tag = el.t == "RawInline" and el.format == "html"
+            and (el.text == "<sub>" and "sub" or el.text == "<sup>" and "sup")
+        if tag then
+            local closing = "</" .. tag .. ">"
+            local inner = pandoc.List()
+            local j = i + 1
+            while j <= #inlines and not (
+                inlines[j].t == "RawInline" and inlines[j].format == "html"
+                and inlines[j].text == closing
+            ) do
+                inner:insert(inlines[j])
+                j = j + 1
+            end
+            if j <= #inlines then
+                result:insert(tag == "sub" and pandoc.Subscript(inner) or pandoc.Superscript(inner))
+                i = j + 1
+            else
+                result:insert(el)
+                i = i + 1
+            end
+        else
+            result:insert(el)
+            i = i + 1
+        end
+    end
+    return result
 end
 """
 
@@ -1310,6 +1352,52 @@ def _md_images_to_html(md_content: str) -> str:
     return _IMG_WITH_DIMS_RE.sub(_replace, md_content)
 
 
+# Fenced code blocks, math, inline code and strikeout must not be touched by
+# the subscript/superscript conversion below.
+_FENCED_CODE_RE = re.compile(r"^```.*?^```", re.DOTALL | re.MULTILINE)
+_DISPLAY_MATH_RE = re.compile(r"\$\$.+?\$\$", re.DOTALL)
+_INLINE_MATH_RE = re.compile(r"\$[^$\n]+\$")
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+_STRIKEOUT_RE = re.compile(r"~~.+?~~", re.DOTALL)
+
+_SUBSCRIPT_RE = re.compile(r"~([^~\s]+)~")
+_SUPERSCRIPT_RE = re.compile(r"\^([^\^\s]+)\^")
+
+
+def _protect(text: str, pattern: re.Pattern, placeholders: list[str]) -> str:
+    """Replace every match of *pattern* with a placeholder, recorded for later restore."""
+    def _stash(m: re.Match) -> str:
+        placeholders.append(m.group(0))
+        return f"\x00{len(placeholders) - 1}\x00"
+    return pattern.sub(_stash, text)
+
+
+def _convert_sub_superscript(md_content: str) -> str:
+    """
+    Convert Pandoc's ``~sub~``/``^sup^`` markdown into ``<sub>``/``<sup>`` HTML.
+
+    The single-tilde/single-caret syntax is a Pandoc-only Markdown extension
+    that CommonMark/GFM renderers (GitHub, VS Code preview) don't understand,
+    so it shows up as literal tildes/carets instead of a subscript/superscript.
+
+    The companion Lua filter in ``_MD2DOC_LUA_FILTER`` collapses these HTML
+    tags back into proper docx subscript/superscript runs during ``md2doc``.
+    """
+    placeholders: list[str] = []
+    for pattern in (
+        _FENCED_CODE_RE, _DISPLAY_MATH_RE, _INLINE_MATH_RE,
+        _INLINE_CODE_RE, _STRIKEOUT_RE,
+    ):
+        md_content = _protect(md_content, pattern, placeholders)
+
+    md_content = _SUBSCRIPT_RE.sub(r"<sub>\1</sub>", md_content)
+    md_content = _SUPERSCRIPT_RE.sub(r"<sup>\1</sup>", md_content)
+
+    for i, original in enumerate(placeholders):
+        md_content = md_content.replace(f"\x00{i}\x00", original)
+    return md_content
+
+
 _IMG_TAG_RE = re.compile(r"<img\s[^>]*>")
 
 
@@ -1526,6 +1614,8 @@ def convert_docx_to_md(
     md_content = _md_images_to_html(md_content)
 
     md_content = _center_image_lines(md_content)
+
+    md_content = _convert_sub_superscript(md_content)
 
     # Extract title: prefer the title page, then docx metadata, then filename
     title = (
@@ -1793,11 +1883,17 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Bidirectional converter between .docx and Markdown.",
     )
+    parser.add_argument(
+        "-V", "--version", action="version", version=f"doc2md {__version__}"
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     # --- doc2md --------------------------------------------------------
     p_d2m = subparsers.add_parser(
         "doc2md", prog="doc2md", help="Convert .docx to Markdown"
+    )
+    p_d2m.add_argument(
+        "-V", "--version", action="version", version=f"doc2md {__version__}"
     )
     p_d2m.add_argument(
         "input", nargs="?", type=Path, default=None,
@@ -1815,6 +1911,9 @@ def main(argv: list[str] | None = None) -> None:
     # --- md2doc --------------------------------------------------------
     p_m2d = subparsers.add_parser(
         "md2doc", prog="md2doc", help="Convert Markdown to .docx"
+    )
+    p_m2d.add_argument(
+        "-V", "--version", action="version", version=f"doc2md {__version__}"
     )
     p_m2d.add_argument(
         "input", type=Path,
