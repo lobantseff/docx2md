@@ -70,12 +70,15 @@ _PAGE_BREAK_MARKER = "PAGE_BREAK_7f8a9b3c"
 
 # Markdown extension string shared by both directions.
 # Disables smart quotes and restricts table format to pipe tables.
+# ``-raw_attribute`` keeps raw HTML verbatim instead of Pandoc's
+# ``` `<em>`{=html} ``` code-span form, which no other renderer understands.
 _MD_EXTENSIONS = (
     "+pipe_tables"
     "+fenced_code_blocks"
     "+line_blocks"
     "+strikeout"
     "+raw_html"
+    "-raw_attribute"
     "-simple_tables"
     "-multiline_tables"
     "-grid_tables"
@@ -99,6 +102,65 @@ function Para(el)
     if #el.content == 0 then
         return nil
     end
+end
+
+-- Word splits a single italic phrase into several runs whenever a subscript
+-- or a plain-text variable interrupts it.  The resulting '*' delimiters then
+-- sit against neighbouring punctuation, which CommonMark does not treat as
+-- flanking, so renderers print literal asterisks instead of italics.  Emit
+-- explicit <em>/<strong> tags for exactly those spans; the companion
+-- _MD2DOC_LUA_FILTER turns them back into real docx formatting.
+local EMPH_TAGS = {Emph = "em", Strong = "strong"}
+
+local function is_space(c)
+    return c == nil or c:match("%s") ~= nil
+end
+
+local function is_punct(c)
+    return c ~= nil and c:match("%p") ~= nil
+end
+
+-- Nearest rendered character before (step -1) or after (step 1) index `from`.
+local function neighbour_char(inlines, from, step)
+    local i = from
+    while i >= 1 and i <= #inlines do
+        local s = pandoc.utils.stringify(inlines[i])
+        if s ~= "" then
+            if step < 0 then return s:sub(-1) else return s:sub(1, 1) end
+        end
+        i = i + step
+    end
+    return nil
+end
+
+local function delimiters_are_flanking(inlines, i, el)
+    local text = pandoc.utils.stringify(el.content)
+    if text == "" then return true end
+
+    local first, last = text:sub(1, 1), text:sub(-1)
+    local before = neighbour_char(inlines, i - 1, -1)
+    local after = neighbour_char(inlines, i + 1, 1)
+
+    local opens = not is_space(first)
+        and (not is_punct(first) or is_space(before) or is_punct(before))
+    local closes = not is_space(last)
+        and (not is_punct(last) or is_space(after) or is_punct(after))
+    return opens and closes
+end
+
+function Inlines(inlines)
+    local result = pandoc.List()
+    for i, el in ipairs(inlines) do
+        local tag = EMPH_TAGS[el.t]
+        if tag and not delimiters_are_flanking(inlines, i, el) then
+            result:insert(pandoc.RawInline("html", "<" .. tag .. ">"))
+            result:extend(el.content)
+            result:insert(pandoc.RawInline("html", "</" .. tag .. ">"))
+        else
+            result:insert(el)
+        end
+    end
+    return result
 end
 """
 
@@ -150,19 +212,23 @@ function RawInline(el)
     end
 end
 
--- <sub>/<sup>/<u> HTML markers survive as RawInline pairs (Pandoc's docx
--- writer silently drops raw HTML formatting), so collapse each pair into a
--- real Subscript/Superscript/Underline element that the docx writer honours.
+-- <sub>/<sup>/<u>/<em>/<strong> HTML markers survive as RawInline pairs
+-- (Pandoc's docx writer silently drops raw HTML formatting), so collapse each
+-- pair into the real element that the docx writer honours.
 local INLINE_TAGS = {
     ["<sub>"] = pandoc.Subscript,
     ["<sup>"] = pandoc.Superscript,
     ["<u>"] = pandoc.Underline,
+    ["<em>"] = pandoc.Emph,
+    ["<strong>"] = pandoc.Strong,
 }
 
 local CLOSING_TAGS = {
     ["<sub>"] = "</sub>",
     ["<sup>"] = "</sup>",
     ["<u>"] = "</u>",
+    ["<em>"] = "</em>",
+    ["<strong>"] = "</strong>",
 }
 
 function Inlines(inlines)

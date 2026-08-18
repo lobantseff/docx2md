@@ -18,6 +18,11 @@
         "uniq": true,
         "awk": true,
         "diff": true,
-        "md-docx": true
+        "md-docx": true,
+        "./increment_version.py": true,
+        "and": true,
+        "doc2md": true,
+        "md2doc": true,
+        "git commit": true
     }
 }
