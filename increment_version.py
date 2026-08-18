@@ -70,12 +70,13 @@ def _git(*args: str, capture: bool = False) -> str:
 def commit_and_tag(version: str) -> None:
     """Commit only pyproject.toml and put an annotated ``vX.Y.Z`` tag on it."""
     author = _git("config", "user.name", capture=True) or "unknown"
-    stamp = datetime.now().strftime("%y%m%d %H:%M")
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    message = f"Release v{version} ({stamp}, {author})"
 
     _git("add", str(PYPROJECT))
     _git("commit", "-m", f"Bump version to {version}")
-    _git("tag", "-a", f"v{version}", "-m", f"v{version} released at {stamp} by {author}")
-    print(f"Committed and tagged v{version}")
+    _git("tag", "-a", f"v{version}", "-m", message)
+    print(f"Committed and tagged: {message}")
 
 
 def main() -> None:
