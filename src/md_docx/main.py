@@ -150,18 +150,30 @@ function RawInline(el)
     end
 end
 
--- <sub>/<sup> HTML markers survive as RawInline pairs (Pandoc's docx writer
--- silently drops raw HTML formatting), so collapse each pair into a real
--- Subscript/Superscript element that carries proper vertAlign in the docx.
+-- <sub>/<sup>/<u> HTML markers survive as RawInline pairs (Pandoc's docx
+-- writer silently drops raw HTML formatting), so collapse each pair into a
+-- real Subscript/Superscript/Underline element that the docx writer honours.
+local INLINE_TAGS = {
+    ["<sub>"] = pandoc.Subscript,
+    ["<sup>"] = pandoc.Superscript,
+    ["<u>"] = pandoc.Underline,
+}
+
+local CLOSING_TAGS = {
+    ["<sub>"] = "</sub>",
+    ["<sup>"] = "</sup>",
+    ["<u>"] = "</u>",
+}
+
 function Inlines(inlines)
     local result = pandoc.List()
     local i = 1
     while i <= #inlines do
         local el = inlines[i]
-        local tag = el.t == "RawInline" and el.format == "html"
-            and (el.text == "<sub>" and "sub" or el.text == "<sup>" and "sup")
-        if tag then
-            local closing = "</" .. tag .. ">"
+        local ctor = el.t == "RawInline" and el.format == "html"
+            and INLINE_TAGS[el.text]
+        if ctor then
+            local closing = CLOSING_TAGS[el.text]
             local inner = pandoc.List()
             local j = i + 1
             while j <= #inlines and not (
@@ -172,7 +184,7 @@ function Inlines(inlines)
                 j = j + 1
             end
             if j <= #inlines then
-                result:insert(tag == "sub" and pandoc.Subscript(inner) or pandoc.Superscript(inner))
+                result:insert(ctor(inner))
                 i = j + 1
             else
                 result:insert(el)
@@ -1353,7 +1365,7 @@ def _md_images_to_html(md_content: str) -> str:
 
 
 # Fenced code blocks, math, inline code and strikeout must not be touched by
-# the subscript/superscript conversion below.
+# the inline-markup conversions below.
 _FENCED_CODE_RE = re.compile(r"^```.*?^```", re.DOTALL | re.MULTILINE)
 _DISPLAY_MATH_RE = re.compile(r"\$\$.+?\$\$", re.DOTALL)
 _INLINE_MATH_RE = re.compile(r"\$[^$\n]+\$")
@@ -1362,6 +1374,7 @@ _STRIKEOUT_RE = re.compile(r"~~.+?~~", re.DOTALL)
 
 _SUBSCRIPT_RE = re.compile(r"~([^~\s]+)~")
 _SUPERSCRIPT_RE = re.compile(r"\^([^\^\s]+)\^")
+_UNDERLINE_SPAN_RE = re.compile(r"\[([^\[\]]*)\]\{\.underline\}")
 
 
 def _protect(text: str, pattern: re.Pattern, placeholders: list[str]) -> str:
@@ -1372,16 +1385,17 @@ def _protect(text: str, pattern: re.Pattern, placeholders: list[str]) -> str:
     return pattern.sub(_stash, text)
 
 
-def _convert_sub_superscript(md_content: str) -> str:
+def _convert_inline_markup(md_content: str) -> str:
     """
-    Convert Pandoc's ``~sub~``/``^sup^`` markdown into ``<sub>``/``<sup>`` HTML.
+    Convert Pandoc-only inline syntax into the HTML equivalents.
 
-    The single-tilde/single-caret syntax is a Pandoc-only Markdown extension
-    that CommonMark/GFM renderers (GitHub, VS Code preview) don't understand,
-    so it shows up as literal tildes/carets instead of a subscript/superscript.
+    ``~sub~``/``^sup^`` and ``[text]{.underline}`` are Pandoc Markdown
+    extensions that CommonMark/GFM renderers (GitHub, VS Code preview) don't
+    understand, so they show up as literal tildes/carets/brackets instead of
+    subscript, superscript or underlined text.
 
-    The companion Lua filter in ``_MD2DOC_LUA_FILTER`` collapses these HTML
-    tags back into proper docx subscript/superscript runs during ``md2doc``.
+    The companion Lua filter in ``_MD2DOC_LUA_FILTER`` collapses the resulting
+    HTML tags back into proper docx runs during ``md2doc``.
     """
     placeholders: list[str] = []
     for pattern in (
@@ -1392,6 +1406,7 @@ def _convert_sub_superscript(md_content: str) -> str:
 
     md_content = _SUBSCRIPT_RE.sub(r"<sub>\1</sub>", md_content)
     md_content = _SUPERSCRIPT_RE.sub(r"<sup>\1</sup>", md_content)
+    md_content = _UNDERLINE_SPAN_RE.sub(r"<u>\1</u>", md_content)
 
     for i, original in enumerate(placeholders):
         md_content = md_content.replace(f"\x00{i}\x00", original)
@@ -1615,7 +1630,7 @@ def convert_docx_to_md(
 
     md_content = _center_image_lines(md_content)
 
-    md_content = _convert_sub_superscript(md_content)
+    md_content = _convert_inline_markup(md_content)
 
     # Extract title: prefer the title page, then docx metadata, then filename
     title = (
