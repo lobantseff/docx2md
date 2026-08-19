@@ -17,7 +17,8 @@ uv tool install git+https://github.com/lobantseff/docx2md
 To install a specific tag or branch:
 
 ```bash
-uv tool install git+https://github.com/lobantseff/docx2md@v0.1.7
+uv tool install git+https://github.com/lobantseff/docx2md@v0.1.8
+uv tool install git+https://github.com/lobantseff/docx2md@master
 ```
 
 To upgrade later:
