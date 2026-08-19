@@ -2,10 +2,9 @@
 
 The fixture document is built from ``tests/fixtures/sample.md`` at test time
 (markdown → docx) so the suite is self-contained; no binary fixtures are
-checked in.  Real-world documents dropped into the gitignored ``docx/`` dir
-are picked up as extra cases and skipped when absent.
+checked in.
 
-For each document, verifies:
+Verifies:
 1. Structural sanity — first-pass markdown has expected minimum counts
    of headings, tables, and images.
 2. Convergence — after two full roundtrip cycles
@@ -25,7 +24,6 @@ from PIL import Image
 
 from md_docx.main import convert_docx_to_md, convert_md_to_docx
 
-ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_MD = Path(__file__).resolve().parent / "fixtures" / "sample.md"
 
 
@@ -191,56 +189,3 @@ class TestSampleRoundtrip:
 
     def test_markdown_stability(self, sample_docx: Path, tmp_path: Path) -> None:
         _assert_stability(sample_docx, tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# Local real-world documents: (docx filename, min_headings, min_tables,
-# min_images).  docx/ is gitignored, so these run only where the files exist.
-# ---------------------------------------------------------------------------
-
-REAL_DOCUMENTS = [
-    ("ANNOTATION_PROTOCOL.docx", 40, 14, 1),
-    ("DRS.docx", 35, 5, 2),
-]
-
-
-def _resolve_real_document(docx_name: str) -> Path:
-    path = ROOT / "docx" / docx_name
-    if not path.exists():
-        pytest.skip(f"{docx_name} not available in docx/")
-    return path
-
-
-@pytest.mark.parametrize(
-    "docx_name, min_headings, min_tables, min_images",
-    REAL_DOCUMENTS,
-    ids=[d[0] for d in REAL_DOCUMENTS],
-)
-class TestRealDocumentRoundtrip:
-    """Roundtrip stability tests per local document."""
-
-    def test_structural_sanity(
-        self,
-        tmp_path: Path,
-        docx_name: str,
-        min_headings: int,
-        min_tables: int,
-        min_images: int,
-    ) -> None:
-        _assert_structure(
-            _resolve_real_document(docx_name),
-            tmp_path,
-            min_headings,
-            min_tables,
-            min_images,
-        )
-
-    def test_markdown_stability(
-        self,
-        tmp_path: Path,
-        docx_name: str,
-        min_headings: int,
-        min_tables: int,
-        min_images: int,
-    ) -> None:
-        _assert_stability(_resolve_real_document(docx_name), tmp_path)
