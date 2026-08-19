@@ -53,6 +53,7 @@ doc2md -d docx/ -o md/
 
 See [STYLE_GUIDE.md](STYLE_GUIDE.md) for formatting rules that ensure clean
 roundtrip conversion.
+
 ## License
 
 [MIT](LICENSE)

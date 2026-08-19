@@ -4,7 +4,7 @@ title: Roundtrip Sample
 
 # Overview
 
-Text with *emphasis*, **strong**, `code`, H~2~O and E=mc^2^, plus
+Text with _emphasis_, **strong**, `code`, H~2~O and E=mc^2^, plus
 [underlined]{.underline} words.
 
 ## Lists
@@ -19,11 +19,11 @@ Text with *emphasis*, **strong**, `code`, H~2~O and E=mc^2^, plus
 
 ## First Table
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| alpha | int | count of things |
-| beta | str | name of things |
-| gamma | float | ratio of things |
+| Parameter | Type  | Description     |
+| --------- | ----- | --------------- |
+| alpha     | int   | count of things |
+| beta      | str   | name of things  |
+| gamma     | float | ratio of things |
 
 <div class="page-break"></div>
 
@@ -39,10 +39,10 @@ Some prose between the figures so they do not merge into one paragraph.
 
 ## Second Table
 
-| Step | Action | Result |
-|------|--------|--------|
-| 1 | load | ok |
-| 2 | transform | ok |
+| Step | Action    | Result |
+| ---- | --------- | ------ |
+| 1    | load      | ok     |
+| 2    | transform | ok     |
 
 ## Code
 
