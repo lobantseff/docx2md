@@ -34,20 +34,41 @@ uv tool install .
 
 ## CLI Usage
 
-After installation, `doc2md` and `md2doc` are available system-wide:
+After installation, `doc2md` and `md2doc` are available system-wide.
+
+### doc2md — docx → markdown
 
 ```bash
-# Convert docx → markdown
-doc2md document.docx
-doc2md document.docx -o output.md
+doc2md document.docx               # writes document.md next to the input
+doc2md document.docx -o output.md  # explicit output file
+doc2md document.docx -o out/       # output directory (created if missing)
 
-# Convert markdown → docx
-md2doc document.md
-md2doc document.md -o output.docx -s reference.docx
-
-# Batch convert a directory of docx files
+# Batch mode: mirror a directory of .docx files into markdown
 doc2md -d docx/ -o md/
+doc2md                             # same as: doc2md -d docx/ -o md/
 ```
+
+| Flag | Meaning |
+| --- | --- |
+| `input` | Input `.docx` file (single-file mode) |
+| `-o`, `--output` | Output `.md` file, or output directory (with `-d`) |
+| `-d`, `--input-dir` | Input directory for batch conversion (default: `docx`) |
+| `-V`, `--version` | Print the version and exit |
+
+### md2doc — markdown → docx
+
+```bash
+md2doc document.md                    # writes document.docx next to the input
+md2doc document.md -o output.docx
+md2doc document.md -s reference.docx  # borrow styling from an existing docx
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `input` | Input `.md` file (required) |
+| `-o`, `--output` | Output `.docx` file |
+| `-s`, `--style-reference` | Reference `.docx` for fonts, heading styles, margins |
+| `-V`, `--version` | Print the version and exit |
 
 ## Markdown Conventions
 
