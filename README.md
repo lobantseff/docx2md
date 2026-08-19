@@ -1,4 +1,4 @@
-# md-docx
+# doc2md
 
 Bidirectional converter between `.docx` and Markdown, built on Pandoc.
 
@@ -8,37 +8,60 @@ Bidirectional converter between `.docx` and Markdown, built on Pandoc.
 
 ## Installation
 
-Install as a global CLI tool:
+Install as a global CLI tool directly from GitHub:
+
+```bash
+uv tool install git+https://github.com/lobantseff/docx2md
+```
+
+To install a specific tag or branch:
+
+```bash
+uv tool install git+https://github.com/lobantseff/docx2md@v0.1.7
+```
+
+To upgrade later:
+
+```bash
+uv tool upgrade doc2md
+```
+
+Or install from a local clone:
 
 ```bash
 uv tool install .
 ```
 
-After installation, `md-docx` is available system-wide:
+After installation, `doc2md` and `md2doc` are available system-wide:
 
 ```bash
-md-docx doc2md document.docx
-md-docx md2doc document.md
+doc2md document.docx
+md2doc document.md
 ```
 
 ## CLI Usage
 
-Install and run via `uv`:
-
 ```bash
 # Convert docx → markdown
-uv run md-docx doc2md document.docx
-uv run md-docx doc2md document.docx -o output.md
+doc2md document.docx
+doc2md document.docx -o output.md
 
 # Convert markdown → docx
-uv run md-docx md2doc document.md
-uv run md-docx md2doc document.md -o output.docx -s reference.docx
+md2doc document.md
+md2doc document.md -o output.docx -s reference.docx
 
 # Batch convert a directory of docx files
-uv run md-docx doc2md -d docx/ -o md/
+doc2md -d docx/ -o md/
 ```
 
-Or run the script directly:
+Without installing, run from a clone via `uv`:
+
+```bash
+uv run doc2md document.docx
+uv run md2doc document.md
+```
+
+Or run the module directly:
 
 ```bash
 uv run --script src/md_docx/main.py doc2md document.docx
