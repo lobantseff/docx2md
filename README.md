@@ -49,12 +49,12 @@ doc2md -d docx/ -o md/
 doc2md                             # same as: doc2md -d docx/ -o md/
 ```
 
-| Flag | Meaning |
-| --- | --- |
-| `input` | Input `.docx` file (single-file mode) |
-| `-o`, `--output` | Output `.md` file, or output directory (with `-d`) |
+| Flag                | Meaning                                                |
+| ------------------- | ------------------------------------------------------ |
+| `input`             | Input `.docx` file (single-file mode)                  |
+| `-o`, `--output`    | Output `.md` file, or output directory (with `-d`)     |
 | `-d`, `--input-dir` | Input directory for batch conversion (default: `docx`) |
-| `-V`, `--version` | Print the version and exit |
+| `-V`, `--version`   | Print the version and exit                             |
 
 ### md2doc — markdown → docx
 
@@ -64,12 +64,12 @@ md2doc document.md -o output.docx
 md2doc document.md -s reference.docx  # borrow styling from an existing docx
 ```
 
-| Flag | Meaning |
-| --- | --- |
-| `input` | Input `.md` file (required) |
-| `-o`, `--output` | Output `.docx` file |
+| Flag                      | Meaning                                              |
+| ------------------------- | ---------------------------------------------------- |
+| `input`                   | Input `.md` file (required)                          |
+| `-o`, `--output`          | Output `.docx` file                                  |
 | `-s`, `--style-reference` | Reference `.docx` for fonts, heading styles, margins |
-| `-V`, `--version` | Print the version and exit |
+| `-V`, `--version`         | Print the version and exit                           |
 
 ## Markdown Conventions
 
