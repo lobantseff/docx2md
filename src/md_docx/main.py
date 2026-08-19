@@ -221,6 +221,10 @@ local INLINE_TAGS = {
     ["<u>"] = pandoc.Underline,
     ["<em>"] = pandoc.Emph,
     ["<strong>"] = pandoc.Strong,
+    -- the docx writer turns a `mark`-classed Span into w:highlight
+    ["<mark>"] = function(inner)
+        return pandoc.Span(inner, pandoc.Attr("", {"mark"}))
+    end,
 }
 
 local CLOSING_TAGS = {
@@ -229,6 +233,7 @@ local CLOSING_TAGS = {
     ["<u>"] = "</u>",
     ["<em>"] = "</em>",
     ["<strong>"] = "</strong>",
+    ["<mark>"] = "</mark>",
 }
 
 function Inlines(inlines)
@@ -1440,7 +1445,10 @@ _STRIKEOUT_RE = re.compile(r"~~.+?~~", re.DOTALL)
 
 _SUBSCRIPT_RE = re.compile(r"~([^~\s]+)~")
 _SUPERSCRIPT_RE = re.compile(r"\^([^\^\s]+)\^")
-_UNDERLINE_SPAN_RE = re.compile(r"\[([^\[\]]*)\]\{\.underline\}")
+# Span body may contain backslash-escaped brackets, e.g. `[\[TODO\]]{.mark}`.
+_SPAN_BODY = r"((?:[^\[\]\\]|\\.)*)"
+_UNDERLINE_SPAN_RE = re.compile(r"\[" + _SPAN_BODY + r"\]\{\.underline\}")
+_MARK_SPAN_RE = re.compile(r"\[" + _SPAN_BODY + r"\]\{\.mark\}")
 
 
 def _protect(text: str, pattern: re.Pattern, placeholders: list[str]) -> str:
@@ -1455,10 +1463,11 @@ def _convert_inline_markup(md_content: str) -> str:
     """
     Convert Pandoc-only inline syntax into the HTML equivalents.
 
-    ``~sub~``/``^sup^`` and ``[text]{.underline}`` are Pandoc Markdown
-    extensions that CommonMark/GFM renderers (GitHub, VS Code preview) don't
-    understand, so they show up as literal tildes/carets/brackets instead of
-    subscript, superscript or underlined text.
+    ``~sub~``/``^sup^``, ``[text]{.underline}`` and ``[text]{.mark}`` (Word
+    highlighting) are Pandoc Markdown extensions that CommonMark/GFM renderers
+    (GitHub, VS Code preview) don't understand, so they show up as literal
+    tildes/carets/brackets instead of subscript, superscript, underlined or
+    highlighted text.
 
     The companion Lua filter in ``_MD2DOC_LUA_FILTER`` collapses the resulting
     HTML tags back into proper docx runs during ``md2doc``.
@@ -1473,6 +1482,7 @@ def _convert_inline_markup(md_content: str) -> str:
     md_content = _SUBSCRIPT_RE.sub(r"<sub>\1</sub>", md_content)
     md_content = _SUPERSCRIPT_RE.sub(r"<sup>\1</sup>", md_content)
     md_content = _UNDERLINE_SPAN_RE.sub(r"<u>\1</u>", md_content)
+    md_content = _MARK_SPAN_RE.sub(r"<mark>\1</mark>", md_content)
 
     for i, original in enumerate(placeholders):
         md_content = md_content.replace(f"\x00{i}\x00", original)
