@@ -76,6 +76,65 @@ md2doc document.md -s reference.docx  # borrow styling from an existing docx
 See [STYLE_GUIDE.md](STYLE_GUIDE.md) for formatting rules that ensure clean
 roundtrip conversion.
 
+## Development: keeping environments in sync
+
+There are two independent installations, and they drift apart silently:
+
+| Environment          | Path                  | Refresh with                    |
+| -------------------- | --------------------- | ------------------------------- |
+| Dev venv (editable)  | `.venv/bin/doc2md`    | `uv sync`                       |
+| Global CLI (uv tool) | `~/.local/bin/doc2md` | `uv tool install --reinstall .` |
+
+When the dev venv is active your shell prompt shows `(doc2md)`, and
+`.venv/bin` precedes `~/.local/bin` on `PATH` — so `uv tool install` appears to
+do nothing, because you keep running the venv's copy. Always confirm which
+binary you are testing:
+
+```bash
+type -a doc2md
+```
+
+To reinstall the global CLI and verify it, leave the venv first:
+
+```bash
+deactivate && uv tool install --reinstall . && doc2md --version
+```
+
+After a version bump, refresh both. `increment_version.py --install` covers
+only the global tool:
+
+```bash
+./increment_version.py patch --install && uv sync
+```
+
+`--version` reads the installed distribution metadata, not `pyproject.toml`.
+An editable install runs current source while still reporting the version
+recorded at install time, so a stale `--version` means the venv needs `uv sync`
+— not that your code is old.
+
+### Recovering from a broken `pypandoc`
+
+```
+AttributeError: module 'pypandoc' has no attribute 'convert_file'
+```
+
+`pypandoc_binary` ships the `pypandoc` module *and* a bundled pandoc, so this
+project depends on it alone. Environments created before that dependency was
+deduplicated still contain plain `pypandoc` as well; when a sync prunes it, the
+shared module files both distributions own are deleted, leaving a
+`site-packages/pypandoc/` that holds only `files/`. Python imports that as a
+namespace package without complaint, so the failure surfaces only at the call
+site. Restore the module with:
+
+```bash
+uv sync --reinstall-package pypandoc-binary   # dev venv
+uv tool install --reinstall .                 # global CLI
+```
+
+Prefer `uv sync --reinstall` over plain `uv sync` when recovering from any
+unexplained import error: it reinstalls every package instead of incrementally
+pruning, so it cannot leave a half-deleted package behind.
+
 ## License
 
 [MIT](LICENSE)
